@@ -1,0 +1,25 @@
+services:
+  gateway:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      SENTINEL_MODE: defended
+      SENTINEL_DB_URL: postgresql+psycopg://sentinel:sentinel@db:5432/sentinel
+      SENTINEL_VECTOR_BACKEND: chroma
+      SENTINEL_PII_BACKEND: presidio
+    depends_on:
+      - db
+      - chroma
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: sentinel
+      POSTGRES_PASSWORD: sentinel
+      POSTGRES_DB: sentinel
+    ports:
+      - "5432:5432"
+  chroma:
+    image: chromadb/chroma:latest
+    ports:
+      - "8001:8000"

@@ -1,0 +1,146 @@
+# SentinelOps guardrail policy — single versioned source of truth (PDR 6.3.4).
+# CI rejects any change here that loosens a threshold, adds a tool or widens an allowlist.
+version: "2.2"
+
+thresholds:
+  injection_low: 0.35          # above low -> safe mode + review (INJ_CLS_MID)
+  injection_high: 0.75         # above high -> block (INJ_CLS_HIGH)
+  session_safe: 6              # above -> safe mode, no tools (SESSION_RISK)
+  session_lock: 12             # above -> locked + review (SESSION_RISK)
+  session_decay_per_minute: 1.0
+  max_input_chars: 8000
+  max_input_tokens: 2048
+  max_context_chunks: 5
+  window_turns: 4
+  max_recipients: 5
+  dispatch_cap_session: 2
+  dispatch_cap_hour: 5
+
+budgets:
+  checkpoint_timeout_ms: 250
+  total_gateway_timeout_ms: 900
+  max_normalise_depth: 3
+  max_normalise_expansion: 4
+  classifier_max_chars: 4000
+  max_classifier_concurrency: 8
+
+rules:
+  - id: INJ_RULE_01
+    reason_code: INJ_RULE_01
+    severity: high
+    pattern: '(?i)ignore\s+(all\s+)?(previous|prior|above|earlier)\s+instructions'
+    description: Direct instruction override
+  - id: INJ_RULE_02
+    reason_code: INJ_RULE_02
+    severity: high
+    pattern: '(?i)(disregard|forget|override)\s+(your\s+)?(system\s+)?(prompt|rules|instructions)'
+    description: System prompt override
+  - id: INJ_RULE_03
+    reason_code: INJ_RULE_03
+    severity: high
+    pattern: '(?i)(print|reveal|show|repeat|dump)\s+(me\s+)?(the\s+)?(system|hidden)\s+prompt'
+    description: System prompt extraction
+  - id: INJ_RULE_04
+    reason_code: INJ_RULE_04
+    severity: high
+    pattern: '(?i)(api[_ -]?key|secret|password|token)\s*(is|:|=|\?)\s*\S'
+    description: Secret extraction
+  - id: INJ_RULE_05
+    reason_code: INJ_RULE_05
+    severity: medium
+    pattern: '(?i)do\s+not\s+(tell|report|mention|log)\s+(this|the\s+user|anyone)'
+    description: Covert behaviour instruction
+  - id: INJ_RULE_06
+    reason_code: INJ_RULE_06
+    severity: high
+    pattern: '(?i)(send|email|forward).{0,60}(customer|invoice|all\s+records).{0,60}(to|@)'
+    description: Data exfiltration via email
+  - id: INJ_RULE_07
+    reason_code: INJ_RULE_07
+    severity: high
+    pattern: '(?i)SELECT\s+\*.{0,80}FROM\s+(customers|invoices|pickups)'
+    description: Bulk data extraction request
+  - id: INJ_RULE_08
+    reason_code: INJ_RULE_08
+    severity: high
+    pattern: '(?i)!\[[^\]]*\]\(https?://'
+    description: Markdown image exfiltration
+  - id: INJ_RULE_09
+    reason_code: INJ_RULE_09
+    severity: medium
+    pattern: '(?i)(baseline|debug|admin)\s+mode\s+(on|enable|override)'
+    description: Mode/privilege escalation attempt
+  - id: INJ_RULE_10
+    reason_code: INJ_RULE_10
+    severity: medium
+    pattern: '(?i)tenant\s*(=|==|:)\s*\d+'
+    description: Cross-tenant parameter injection
+  - id: INJ_RULE_11
+    reason_code: INJ_RULE_11
+    severity: high
+    pattern: '(?i)(bypass|disable|turn\s+off)\s+(the\s+)?(guard|filter|guardrail|rate\s+limit)'
+    description: Guardrail self-protection probe
+  - id: INJ_RULE_12
+    reason_code: INJ_RULE_12
+    severity: high
+    pattern: '(?i)base64\s*[:=]?\s*[A-Za-z0-9+/]{20,}'
+    description: Encoded payload
+  - id: INJ_RULE_13
+    reason_code: INJ_RULE_13
+    severity: medium
+    pattern: '(?i)pretend\s+(you\s+are|to\s+be)\s+(an?\s+)?(admin|unrestricted|developer)'
+    description: Role-play privilege escalation
+  - id: INJ_RULE_14
+    reason_code: INJ_RULE_14
+    severity: medium
+    pattern: '(?i)(jailbreak|developer\s+mode|DAN\s+mode)'
+    description: Known jailbreak phrase
+
+tools:
+  query_db:
+    risk_tier: medium
+    allowed: true
+    approval_required: false
+    allowed_tables: [customers, invoices, pickups, materials]
+    max_rows: 50
+    statement_timeout_ms: 1000
+    reason_codes: [SQL_NOT_SELECT, TABLE_NOT_ALLOWED, TENANT_MISMATCH]
+  search_docs:
+    risk_tier: medium
+    allowed: true
+    approval_required: false
+    max_chunks: 5
+    reason_codes: [TENANT_MISMATCH, CTX_POISON]
+  generate_report:
+    risk_tier: low
+    allowed: true
+    approval_required: false
+    report_types: [client_impact, compliance, pickup_summary]
+    reason_codes: [TOOL_PARAM_INVALID, TENANT_MISMATCH]
+  send_email:
+    risk_tier: high
+    allowed: true
+    approval_required: true
+    allowed_domains: [acme-recycling.example, sentinelops.local]
+    max_recipients: 5
+    reason_codes: [RECIPIENT_DOMAIN, APPROVAL_PENDING]
+  dispatch_vehicle:
+    risk_tier: high
+    allowed: true
+    approval_required: true
+    cap_session: 2
+    cap_hour: 5
+    reason_codes: [DISPATCH_CAP, APPROVAL_PENDING]
+
+egress:
+  allowed_domains: [acme-recycling.example, sentinelops.local, example.com]
+  allowed_schemes: [https]
+  max_url_length: 200
+  flag_long_query: 80
+
+pii:
+  mask_char: "*"
+  field_types: [email, phone, iban, ssn_like, customer_id]
+
+logging:
+  retention_days: 30

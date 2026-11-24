@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SentinelOps guardrail policy",
+  "type": "object",
+  "required": ["version", "thresholds", "budgets", "rules", "tools", "egress", "pii", "logging"],
+  "properties": {
+    "version": {"type": "string"},
+    "thresholds": {
+      "type": "object",
+      "required": ["injection_low", "injection_high", "session_safe", "session_lock", "max_input_chars", "max_input_tokens", "max_context_chunks", "window_turns"],
+      "properties": {
+        "injection_low": {"type": "number", "minimum": 0, "maximum": 1},
+        "injection_high": {"type": "number", "minimum": 0, "maximum": 1},
+        "session_safe": {"type": "integer", "minimum": 1},
+        "session_lock": {"type": "integer", "minimum": 1},
+        "session_decay_per_minute": {"type": "number", "minimum": 0},
+        "max_input_chars": {"type": "integer", "minimum": 1},
+        "max_input_tokens": {"type": "integer", "minimum": 1},
+        "max_context_chunks": {"type": "integer", "minimum": 1},
+        "window_turns": {"type": "integer", "minimum": 1},
+        "max_recipients": {"type": "integer", "minimum": 1},
+        "dispatch_cap_session": {"type": "integer", "minimum": 1},
+        "dispatch_cap_hour": {"type": "integer", "minimum": 1}
+      }
+    },
+    "budgets": {
+      "type": "object",
+      "required": ["checkpoint_timeout_ms", "total_gateway_timeout_ms", "max_normalise_depth", "classifier_max_chars"],
+      "properties": {
+        "checkpoint_timeout_ms": {"type": "integer", "minimum": 1},
+        "total_gateway_timeout_ms": {"type": "integer", "minimum": 1},
+        "max_normalise_depth": {"type": "integer", "minimum": 0},
+        "max_normalise_expansion": {"type": "integer", "minimum": 1},
+        "classifier_max_chars": {"type": "integer", "minimum": 1},
+        "max_classifier_concurrency": {"type": "integer", "minimum": 1}
+      }
+    },
+    "rules": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "reason_code", "severity", "pattern"],
+        "properties": {
+          "id": {"type": "string"},
+          "reason_code": {"type": "string", "pattern": "^INJ_RULE_[0-9]{2}$"},
+          "severity": {"enum": ["low", "medium", "high", "critical"]},
+          "pattern": {"type": "string"},
+          "description": {"type": "string"}
+        }
+      }
+    },
+    "tools": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "required": ["risk_tier", "allowed", "approval_required"],
+        "properties": {
+          "risk_tier": {"enum": ["low", "medium", "high"]},
+          "allowed": {"type": "boolean"},
+          "approval_required": {"type": "boolean"},
+          "allowed_tables": {"type": "array", "items": {"type": "string"}},
+          "allowed_domains": {"type": "array", "items": {"type": "string"}},
+          "report_types": {"type": "array", "items": {"type": "string"}},
+          "max_rows": {"type": "integer", "minimum": 1},
+          "max_chunks": {"type": "integer", "minimum": 1},
+          "max_recipients": {"type": "integer", "minimum": 1},
+          "cap_session": {"type": "integer", "minimum": 1},
+          "cap_hour": {"type": "integer", "minimum": 1},
+          "statement_timeout_ms": {"type": "integer", "minimum": 1},
+          "reason_codes": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    },
+    "egress": {
+      "type": "object",
+      "required": ["allowed_domains", "allowed_schemes"],
+      "properties": {
+        "allowed_domains": {"type": "array", "items": {"type": "string"}},
+        "allowed_schemes": {"type": "array", "items": {"type": "string"}},
+        "max_url_length": {"type": "integer", "minimum": 1},
+        "flag_long_query": {"type": "integer", "minimum": 1}
+      }
+    },
+    "pii": {
+      "type": "object",
+      "required": ["mask_char", "field_types"],
+      "properties": {
+        "mask_char": {"type": "string", "minLength": 1, "maxLength": 1},
+        "field_types": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "logging": {
+      "type": "object",
+      "required": ["retention_days"],
+      "properties": {"retention_days": {"type": "integer", "minimum": 1}}
+    }
+  }
+}
