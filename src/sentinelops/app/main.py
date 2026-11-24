@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
 from ..agent.agent import Agent
@@ -119,6 +119,12 @@ def create_app(settings: Settings | None = None, db: Database | None = None, pol
 
     def principal(request: Request, authorization: str | None = Header(default=None)) -> Principal:
         return authenticate(authorization, settings.jwt_secret, settings.is_defended, database)
+
+    @app.get("/ui", response_class=HTMLResponse, include_in_schema=False)
+    def web_ui() -> str:
+        from .ui import UI_HTML
+
+        return UI_HTML
 
     @app.get("/health")
     def health() -> dict[str, str]:

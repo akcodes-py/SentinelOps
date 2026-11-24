@@ -34,8 +34,12 @@ python -m pytest -q                       # all tests (incl. slow ASR comparison
 python -m pytest -q -m "not slow"         # fast CI subset
 python scripts/demo.py                    # same attack: baseline succeeds, defended blocks
 python scripts/run_evaluation.py --repeats 2
-uvicorn sentinelops.app.main:app --reload --port 8000
+uvicorn sentinelops.app.main:app --reload --port 8010
 ```
+
+Then open **http://127.0.0.1:8010/ui** for the simple web UI, or use the API directly
+(`/docs` has the OpenAPI explorer). Port 8010 is used because Docker Desktop/WSL may
+already own port 8000 on Windows.
 
 CI gate in `.github/workflows/ci.yml`: policy validation + diff, fast tests, and a
 defended ASR/FPR gate. Secrets are scanned with gitleaks.
