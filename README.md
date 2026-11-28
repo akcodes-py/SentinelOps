@@ -7,7 +7,7 @@
 
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115%2B-009688?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
-[![Tests](https://img.shields.io/badge/Pytest-98%20Passed-2ea44f?style=flat-square&logo=pytest&logoColor=white)](tests/)
+[![Tests](https://img.shields.io/badge/Pytest-114%20Passed-2ea44f?style=flat-square&logo=pytest&logoColor=white)](tests/)
 [![Policy](https://img.shields.io/badge/Policy-v2.2%20Validated-6366f1?style=flat-square)](policy.yaml)
 [![OWASP](https://img.shields.io/badge/OWASP-LLM%20%26%20API%20Top%2010-dc2626?style=flat-square)](docs/threat_model.md)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?style=flat-square&logo=docker&logoColor=white)](Dockerfile)
@@ -21,6 +21,7 @@
 [Verified Results](#-verified-evaluation-results) •
 [Guardrail Policy](#-guardrail-policy--checkpoints) •
 [API & Web UI](#-api--web-ui) •
+[Security Assessment](SECURITY_ASSESSMENT.md) •
 [Repository Layout](#-repository-layout)
 
 </div>
@@ -74,18 +75,25 @@ It pairs a deliberately vulnerable target with a hardened gateway and an automat
 - **Hardened Tool Execution**: Enforces single-`SELECT` SQL gates, table allowlists, tenant-scoped DB filtering, read-only DB execution (`PRAGMA query_only = ON` in defended mode), dispatch caps, and a **Human-in-the-Loop (HITL) approval queue** (`/approvals`) for high-risk actions (`send_email`, `dispatch_vehicle`).
 - **Security Event Logging & Alerting**: Emits structured JSONL logs and `security_alert` events ([`logging_utils.py`](src/sentinelops/logging_utils.py)) tagged with `request_id`, `policy_version`, and registered reason codes to power `/reports/alerts`, `/reports/timeline`, `/reports/vulnerability`, and `/reports/residual`.
 - **Fail-Closed Self-Protection**: Bounded input normalisation (encodings, split words, length caps), timeout fail-closed (`GUARD_TIMEOUT`), and a CI policy-diff gate that blocks PRs attempting to loosen controls.
+- **At-Rest Encryption & TLS Headers**: AES-256-GCM (`ENCRYPTION_KEY`, 12-byte random nonces, tamper detection) for sensitive audit payloads in PostgreSQL/SQLite, plus HSTS, `nosniff`, `DENY`, strict CSP and `no-referrer` on every response. See [SECURITY_ASSESSMENT.md](SECURITY_ASSESSMENT.md) for the OWASP 2026 mapping.
 
 ---
 
 ## 🎯 Threat-to-Control Matrix
 
-| OWASP / PDR Threat | SentinelOps Control | Implementation |
+| OWASP 2026 / PDR Threat | SentinelOps Control | Implementation |
 |---|---|---|
-| **Prompt Injection & Jailbreaks** `LLM01` | Input + context gates, calibrated classifier, canary & similarity checks | [`gates.py`](src/sentinelops/guardrails/gates.py), [`classifier.py`](src/sentinelops/guardrails/classifier.py) |
-| **Excessive Agency** `LLM06` | Tool allowlist, param schemas, risk tiers, dispatch caps, HITL queue | [`ToolGate`](src/sentinelops/guardrails/gates.py), [`approval.py`](src/sentinelops/approval.py) |
-| **Sensitive Data Exposure** `LLM02` `LLM07` | Tenant scoping, PII masking (regex/Presidio), egress domain allowlist | [`pii.py`](src/sentinelops/pii.py), [`OutputGate`](src/sentinelops/guardrails/gates.py) |
-| **API Weaknesses** `API1–API4` | JWT auth, RBAC, BOLA/IDOR checks, parameterised SQL, rate limiting | [`auth.py`](src/sentinelops/auth.py), [`rate_limit.py`](src/sentinelops/rate_limit.py) |
+| **Prompt Injection & Jailbreaks** `LLM01:2026` · `ASI01` | Input + context gates, calibrated classifier, canary & similarity checks | [`gates.py`](src/sentinelops/guardrails/gates.py), [`classifier.py`](src/sentinelops/guardrails/classifier.py) |
+| **Excessive Agency / Tool Misuse** `LLM03:2026` · `ASI02` | Tool allowlist, param schemas, risk tiers, dispatch caps, HITL queue | [`ToolGate`](src/sentinelops/guardrails/gates.py), [`approval.py`](src/sentinelops/approval.py) |
+| **Sensitive Information Disclosure** `LLM02:2026` | Tenant scoping, PII masking (regex/Presidio), egress allowlist, AES-256-GCM audit payloads | [`pii.py`](src/sentinelops/pii.py), [`OutputGate`](src/sentinelops/guardrails/gates.py), [`encryption.py`](src/security/encryption.py) |
+| **API Weaknesses / Identity Abuse** `API1–API4` · `ASI03` | JWT auth, RBAC, BOLA/IDOR checks, parameterised SQL, rate limiting | [`auth.py`](src/sentinelops/auth.py), [`rate_limit.py`](src/sentinelops/rate_limit.py) |
+| **Hidden Context Exposure** `LLM08:2026` (`LLM07:2025`) | Canary/system-prompt + `policy.yaml` extraction blocks, hidden-context output gate | [`gates.py`](src/sentinelops/guardrails/gates.py) |
+| **Vector & Embedding Weaknesses** `LLM09:2026` · `ASI06` | Tenant-scoped retrieval, chunk trust scan, `CTX_POISON` quarantine, session window rescan | [`vectorstore.py`](src/sentinelops/vectorstore.py), [`gates.py`](src/sentinelops/guardrails/gates.py) |
+| **Unbounded Consumption** `LLM06:2026` (`LLM10:2025`) | Token bucket, length/expansion caps, checkpoint budgets, fail-closed timeout | [`rate_limit.py`](src/sentinelops/rate_limit.py), [`normalise.py`](src/sentinelops/guardrails/normalise.py) |
+| **Improper Output Handling / Human-Agent Trust** `LLM10:2026` · `ASI09` | HTML escaping, egress sanitisation, generic refusals, HITL approval | [`gates.py`](src/sentinelops/guardrails/gates.py), [`approval.py`](src/sentinelops/approval.py) |
 | **Guardrail Bypass & Drift** | Schema-validated `policy.yaml`, CI policy diff gate, bounded normalisation | [`policy.py`](src/sentinelops/guardrails/policy.py), [`normalise.py`](src/sentinelops/guardrails/normalise.py) |
+
+Full risk-by-risk evidence: [SECURITY_ASSESSMENT.md](SECURITY_ASSESSMENT.md).
 
 ---
 
@@ -113,7 +121,7 @@ pip install -e . --no-deps --no-build-isolation
 
 ```bash
 # Run automated tests
-python -m pytest -v                       # Full suite (98 tests, incl. ASR comparison)
+python -m pytest -v                       # Full suite (114 tests, incl. ASR + crypto/TLS coverage)
 python -m pytest -q -m "not slow"         # Fast CI subset
 
 # Run demo, classifier calibration, and red-team evaluation
@@ -133,6 +141,23 @@ python -m uvicorn sentinelops.app.main:app --reload --port 8010
 
 > [!TIP]
 > Port `8010` is used by default because Docker Desktop/WSL often reserves port `8000` on Windows. Switch modes anytime using `SENTINEL_MODE=baseline` or `SENTINEL_MODE=defended`.
+
+### Local HTTPS/TLS & encryption key
+
+```bash
+# 1. Generate a development key (never commit the output):
+python -c "import base64,os;print(base64.b64encode(os.urandom(32)).decode())"
+# Put the value in ENCRYPTION_KEY in your .env (see .env.example) to encrypt audit payloads at rest.
+
+# 2. Self-signed certificate for local TLS:
+mkdir certs
+openssl req -x509 -newkey rsa:2048 -nodes -keyout certs/key.pem -out certs/cert.pem -days 365 -subj "/CN=localhost"
+
+# 3. Start the gateway over HTTPS:
+python -m uvicorn sentinelops.app.main:app --ssl-keyfile ./certs/key.pem --ssl-certfile ./certs/cert.pem --port 8010
+```
+
+Behind a TLS-terminating proxy, set `SENTINEL_REQUIRE_HTTPS=true` and list the proxy in `SENTINEL_TRUSTED_PROXIES`. The gateway sends HSTS, `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Content-Security-Policy: default-src 'self'` and `Referrer-Policy: no-referrer` on every response (`src/middleware/security_headers.py`). Strict CSP blocks the inline assets of the built-in `/ui` demo; use the same-origin React UI in `frontend/` for production.
 
 ---
 
@@ -357,7 +382,7 @@ xychart-beta
 ```
 
 <details>
-<summary><b>🧪 Automated Test Coverage — 98/98 Passed (Click to expand)</b></summary>
+<summary><b>🧪 Automated Test Coverage — 114/114 Passed (Click to expand)</b></summary>
 <br/>
 
 | # | Test Area | File | Cases | What It Proves |
@@ -369,7 +394,8 @@ xychart-beta
 | 5 | Self-protection & fail-closed | [`test_self_protection.py`](tests/test_self_protection.py) | 6 | Bounded normalisation, split words, base64 decoding, oversized input, timeout fail-closed |
 | 6 | Gateway, Auth & APIs | [`test_api.py`](tests/test_api.py) | 8 | Health, 401 without JWT, tenant scoping, BOLA + SQLi on baseline, injection blocked on defended, approval queue |
 | 7 | Red-team engine & ASR gates | [`test_redteam.py`](tests/test_redteam.py) | 4 | 49 cases across 6 families, ≥76 benign queries, judge rules, defended ASR < 10%, FPR < 5%, latency < 300 ms |
-| 8 | Extended security controls | [`test_security_controls.py`](tests/test_security_controls.py) | 55 | All 14 `INJ_RULE`s, all 5 PII types, egress variants, HTTPS/HSTS, read-only DB, alerts, RBAC, 429 rate limit, session risk, VectorStore |
+| 8 | Extended security controls | [`test_security_controls.py`](tests/test_security_controls.py) | 58 | All 14 original `INJ_RULE`s, all 5 PII types, egress variants, HTTPS/HSTS, read-only DB, alerts, RBAC, 429 rate limit, session risk, VectorStore |
+| 9 | Crypto, TLS & OWASP 2026 | [`test_gateway_crypto_and_owasp2026.py`](tests/test_gateway_crypto_and_owasp2026.py) | 13 | AES-256-GCM round-trip / unique nonces / tamper rejection, encrypted audit at rest, all 5 headers, `LLM08` hidden-context and `ASI06` poisoning blocked + logged |
 
 </details>
 
@@ -412,9 +438,12 @@ CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) automatically enforc
 | [`src/sentinelops/agent/`](src/sentinelops/agent/) | Copilot tools, prompt hardening, deterministic offline model adapter |
 | [`src/sentinelops/redteam/`](src/sentinelops/redteam/) | 49 attack cases, 76 benign queries (EN/Hinglish/Hindi), rule judge, HTTP runner |
 | [`src/sentinelops/reports.py`](src/sentinelops/reports.py) | Incident timeline, vulnerability report, residual risk table builder |
-| [`docs/`](docs/) | [Architecture](docs/architecture.md) · [Threat Model](docs/threat_model.md) · [Classifier Model Card](docs/model_card_classifier.md) · [System Card](docs/system_card.md) · [Residual Risk](docs/residual_risk.md) |
+| [`src/security/encryption.py`](src/security/encryption.py) | AES-256-GCM key loading, encryption, nonce generation and tamper detection |
+| [`src/middleware/security_headers.py`](src/middleware/security_headers.py) | HSTS, nosniff, X-Frame-Options, strict CSP and referrer headers |
+| [`SECURITY_ASSESSMENT.md`](SECURITY_ASSESSMENT.md) · [`tracker.md`](tracker.md) · [`decision.md`](decision.md) | VAPT report with OWASP 2026 mappings, progress tracker and implementation decisions |
+| [`docs/`](docs/) | [Architecture](docs/architecture.md) · [Threat Model](docs/threat_model.md) · [Classifier Model Card](docs/model_card_classifier.md) · [System Card](docs/system_card.md) · [Residual Risk](docs/residual_risk.md) · [Postman VAPT collection](docs/sentinelops.postman_collection.json) · [Burp checklist](docs/BURP_SUITE_CHECKLIST.md) · [Evidence folder](docs/security_evidence/) |
 | [`scripts/`](scripts/) | Classifier training, full evaluation runner, baseline-vs-defended demo, CI policy diff |
-| [`tests/`](tests/) | 98 automated tests across 8 security & functional areas |
+| [`tests/`](tests/) | 114 automated tests across 9 security & functional areas (incl. `test_gateway_crypto_and_owasp2026.py`) |
 | [`frontend/`](frontend/) | React + Vite frontend UI |
 | [`postman/`](postman/) | Postman v2.1 API & security test collection |
 

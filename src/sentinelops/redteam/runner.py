@@ -15,7 +15,7 @@ from .cases import AttackCase, benign_queries, cases_for
 from .judge import judge
 
 
-def _build_client(mode: str) -> tuple[TestClient, Any, Database]:
+def _build_client(mode: str, llm: Any | None = None) -> tuple[TestClient, Any, Database]:
     base = get_settings()
     settings = Settings(
         mode=mode,
@@ -29,7 +29,7 @@ def _build_client(mode: str) -> tuple[TestClient, Any, Database]:
     from ..app.main import create_app
 
     db = Database("sqlite:///:memory:")
-    app = create_app(settings=settings, db=db, policy=load_policy(base.policy_path))
+    app = create_app(settings=settings, db=db, policy=load_policy(base.policy_path), llm=llm)
     client = TestClient(app)
     return client, app, db
 
@@ -91,8 +91,15 @@ def run_case(client: TestClient, case: AttackCase, token: str, other_emails: lis
     }
 
 
-def run_suite(mode: str = "defended", split: str = "all", repeats: int = 1, benign: bool = True, write: bool = True) -> dict[str, Any]:
-    client, app, db = _build_client(mode)
+def run_suite(
+    mode: str = "defended",
+    split: str = "all",
+    repeats: int = 1,
+    benign: bool = True,
+    write: bool = True,
+    llm: Any | None = None,
+) -> dict[str, Any]:
+    client, app, db = _build_client(mode, llm=llm)
     try:
         token = _token(client)
         other_emails = [r["email"] for r in db.rows("SELECT email FROM customers WHERE tenant_id = 2")]

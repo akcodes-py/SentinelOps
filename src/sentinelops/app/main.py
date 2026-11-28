@@ -5,9 +5,10 @@ from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
+from middleware.security_headers import SecurityHeadersMiddleware
 from pydantic import BaseModel
 
-from ..agent.agent import Agent
+from ..agent.agent import Agent, build_llm
 from ..approval import ApprovalStore
 from ..auth import AuthError, Principal, authenticate, create_token
 from ..config import Settings, get_settings
@@ -48,7 +49,12 @@ class ApprovalDecision(BaseModel):
     reason: str = ""
 
 
-def create_app(settings: Settings | None = None, db: Database | None = None, policy: Policy | None = None) -> FastAPI:
+def create_app(
+    settings: Settings | None = None,
+    db: Database | None = None,
+    policy: Policy | None = None,
+    llm: Any | None = None,
+) -> FastAPI:
     settings = settings or get_settings()
     configure_logging(settings.log_path)
     configure_alerting(settings.alert_webhook)
@@ -79,10 +85,13 @@ def create_app(settings: Settings | None = None, db: Database | None = None, pol
         sessions=state["sessions"],
         defended=settings.is_defended,
         pii_backend=settings.pii_backend,
+        llm=llm or build_llm(settings.llm_backend, settings.temperature),
     )
     APP_STATE.update(state)
 
     app = FastAPI(title="SentinelOps", version="1.0.0", description="Secure AI control plane reference implementation")
+    # Added after the @app.middleware handler below: wraps early denials too.
+    app.add_middleware(SecurityHeadersMiddleware)
     app.state.sentinel = state
 
     @app.exception_handler(AuthError)
@@ -118,8 +127,7 @@ def create_app(settings: Settings | None = None, db: Database | None = None, pol
             response = await call_next(request)
             response.headers["X-Request-ID"] = rid
             response.headers["X-Policy-Version"] = active_policy.version
-            if settings.is_defended:
-                response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+            # HSTS and the other transport headers are set by SecurityHeadersMiddleware.
             emit("http_request", method=request.method, path=request.url.path, status=response.status_code, latency_ms=elapsed_ms(start))
             return response
         finally:
@@ -167,6 +175,28 @@ def create_app(settings: Settings | None = None, db: Database | None = None, pol
                     __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
                 ),
             )
+        # The raw prompt + decision detail are sensitive at rest: store them
+        # AES-256-GCM encrypted, only when an ENCRYPTION_KEY is configured.
+        if settings.is_defended:
+            database.store_encrypted_audit(
+                request_id_var.get(),
+                str(p.tenant_id),
+                {
+                    "request_id": request_id_var.get(),
+                    "tenant_id": p.tenant_id,
+                    "session_id": req.session_id,
+                    "prompt": req.message,
+                    "decisions": [
+                        {
+                            "checkpoint": checkpoint_for(d.reason_code),
+                            "action": d.action,
+                            "reason_code": d.reason_code,
+                            "detail": d.detail,
+                        }
+                        for d in result.decisions
+                    ],
+                },
+            )
         return {
             "text": result.text,
             "blocked": result.blocked,
@@ -185,7 +215,9 @@ def create_app(settings: Settings | None = None, db: Database | None = None, pol
             row = database.one("SELECT * FROM customers WHERE id = ? AND tenant_id = ?", (int(customer_id), p.tenant_id))
         else:
             # Intentional BOLA/SQLi flaw: no tenant check, string-built SQL.
-            rows = database.rows(f"SELECT * FROM customers WHERE id = {customer_id}")
+            # Bandit suppression: baseline mode is deliberately vulnerable for
+            # the red-team comparison; defended mode above uses bound params.
+            rows = database.rows(f"SELECT * FROM customers WHERE id = {customer_id}")  # nosec B608
             row = rows if len(rows) > 1 else (rows[0] if rows else None)
         if not row:
             raise HTTPException(404, "not found")
@@ -198,7 +230,8 @@ def create_app(settings: Settings | None = None, db: Database | None = None, pol
                 raise HTTPException(404, "not found")
             row = database.one("SELECT * FROM invoices WHERE id = ? AND tenant_id = ?", (int(invoice_id), p.tenant_id))
         else:
-            rows = database.rows(f"SELECT * FROM invoices WHERE id = {invoice_id}")
+            # Same intentional baseline SQLi flaw as /customers above.
+            rows = database.rows(f"SELECT * FROM invoices WHERE id = {invoice_id}")  # nosec B608
             row = rows if len(rows) > 1 else (rows[0] if rows else None)
         if not row:
             raise HTTPException(404, "not found")
@@ -211,7 +244,8 @@ def create_app(settings: Settings | None = None, db: Database | None = None, pol
                 raise HTTPException(404, "not found")
             row = database.one("SELECT * FROM pickups WHERE id = ? AND tenant_id = ?", (int(pickup_id), p.tenant_id))
         else:
-            rows = database.rows(f"SELECT * FROM pickups WHERE id = {pickup_id}")
+            # Same intentional baseline SQLi flaw as /customers above.
+            rows = database.rows(f"SELECT * FROM pickups WHERE id = {pickup_id}")  # nosec B608
             row = rows if len(rows) > 1 else (rows[0] if rows else None)
         if not row:
             raise HTTPException(404, "not found")

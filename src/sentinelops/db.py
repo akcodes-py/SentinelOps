@@ -5,12 +5,16 @@ PostgreSQL is a connection-string change; the SQL uses only common syntax.
 """
 from __future__ import annotations
 
+import json
 import random
 import re
 import sqlite3
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from security.encryption import AUDIT_AAD, decrypt_text, encrypt, key_is_configured
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS tenants (
@@ -53,6 +57,11 @@ CREATE TABLE IF NOT EXISTS findings (
 CREATE TABLE IF NOT EXISTS guard_decisions (
     id INTEGER PRIMARY KEY, request_id TEXT, session_id TEXT, checkpoint TEXT,
     action TEXT, reason_code TEXT, detail TEXT, policy_version TEXT, ts TEXT
+);
+-- Only sensitive audit payloads are stored here, always AES-256-GCM encrypted.
+CREATE TABLE IF NOT EXISTS encrypted_audit_events (
+    id INTEGER PRIMARY KEY, request_id TEXT, tenant_id TEXT,
+    payload TEXT NOT NULL, created_at TEXT NOT NULL
 );
 """
 
@@ -171,6 +180,29 @@ class Database:
             cur = self.conn.execute(sql, tuple(params))
             row = cur.fetchone()
             return row[0] if row else None
+
+    # -- encrypted audit payloads (at rest) -------------------------------
+    def store_encrypted_audit(self, request_id: str, tenant_id: str, payload: dict[str, Any]) -> bool:
+        """Persist a sensitive audit payload as AES-256-GCM ciphertext.
+
+        Returns False (no write, no error) when no valid ENCRYPTION_KEY is
+        configured, so the default offline setup is unchanged.
+        """
+        if not key_is_configured():
+            return False
+        token = encrypt(json.dumps(payload, default=str, sort_keys=True), aad=AUDIT_AAD)
+        self.execute(
+            "INSERT INTO encrypted_audit_events (request_id, tenant_id, payload, created_at) VALUES (?,?,?,?)",
+            (request_id, tenant_id, token, datetime.now(timezone.utc).isoformat()),
+        )
+        return True
+
+    def read_encrypted_audit(self, row_id: int) -> dict[str, Any]:
+        """Decrypt and parse a stored audit payload; raises on tampering."""
+        row = self.one("SELECT payload FROM encrypted_audit_events WHERE id = ?", (row_id,))
+        if row is None:
+            raise LookupError(f"encrypted audit event {row_id} not found")
+        return json.loads(decrypt_text(row["payload"], aad=AUDIT_AAD))
 
     # -- the two modes of agent database access ---------------------------
     def query_for_agent(self, sql: str, tenant_id: int, defended: bool, max_rows: int = 50) -> list[dict[str, Any]]:

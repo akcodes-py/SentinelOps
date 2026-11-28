@@ -95,6 +95,11 @@ rules:
     severity: medium
     pattern: '(?i)(jailbreak|developer\s+mode|DAN\s+mode)'
     description: Known jailbreak phrase
+  - id: INJ_RULE_15
+    reason_code: INJ_RULE_15
+    severity: high
+    pattern: '(?i)(print|reveal|show|dump|export|read|give).{0,60}(policy\.yaml|policy\.schema\.json|hidden (context|instructions|rules)|internal configuration|system prompt)'
+    description: Hidden-context extraction attempt (LLM08:2026)
 
 tools:
   query_db:

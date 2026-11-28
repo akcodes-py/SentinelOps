@@ -9,8 +9,14 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
+import json
+import os
 import re
+import subprocess
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
+from threading import Lock
 from typing import Any
 
 from ..approval import ApprovalStore
@@ -132,9 +138,240 @@ class LangChainLLM:
         return [], str(getattr(reply, "content", reply))
 
 
+_LOCAL_INSTRUCTION = (
+    "\nRespond with one compact JSON object only: "
+    '{"text":"short answer","tool_calls":[{"tool":"query_db","params":{"query":"SELECT ..."}}]}. '
+    "Use [] when no tool is needed. No prose, no markdown."
+)
+
+
+class LocalHFLLM:
+    """Small local instruct model (Qwen 0.5B) used when no hosted quota exists.
+
+    Batched generation keeps the offline check fast; the cache means the
+    evaluation replays exactly what the model produced during prewarm.
+    """
+
+    def __init__(self, model_name: str = "Qwen/Qwen2.5-0.5B-Instruct", batch_size: int = 8,
+                 revision: str | None = None) -> None:
+        from ..config import get_settings
+
+        self.model_name = model_name
+        # Supply-chain control (OWASP LLM04:2026 / ASI04:2026): only immutable
+        # commit SHAs are accepted; branches/tags can be moved by an attacker.
+        self.revision = revision or get_settings().hf_revision
+        if self.revision and not (
+            len(self.revision) >= 7
+            and all(c in "0123456789abcdefABCDEF" for c in self.revision)
+        ):
+            raise ValueError("SENTINEL_HF_REVISION must be a commit SHA, not a branch/tag")
+        self.batch_size = int(batch_size)
+        self._tokenizer: Any = None
+        self._model: Any = None
+        self._cache: dict[str, tuple[list[dict[str, Any]], str]] = {}
+        self.calls = 0
+        self.hits = 0
+        self.errors = 0
+
+    def _load(self) -> None:
+        if self._model is not None:
+            return
+        if not self.revision:
+            raise RuntimeError(
+                "SENTINEL_HF_REVISION (immutable commit SHA) is required when "
+                "SENTINEL_LLM_BACKEND=hf"
+            )
+        import torch  # local dependency
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+
+        self._torch = torch
+        self._tokenizer = AutoTokenizer.from_pretrained(
+            self.model_name, revision=self.revision
+        )
+        self._tokenizer.padding_side = "left"
+        self._model = AutoModelForCausalLM.from_pretrained(
+            self.model_name, revision=self.revision
+        )
+        self._model.eval()
+        if self._tokenizer.pad_token_id is None:
+            self._tokenizer.pad_token = self._tokenizer.eos_token
+
+    @staticmethod
+    def _compact(prompt: str) -> str:
+        return prompt[-1400:] + _LOCAL_INSTRUCTION
+
+    def _generate(self, prompts: list[str]) -> list[tuple[list[dict[str, Any]], str]]:
+        self._load()
+        encoded = self._tokenizer(
+            [self._compact(p) for p in prompts],
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=1024,
+        )
+        try:
+            with self._torch.no_grad():
+                output = self._model.generate(
+                    **encoded,
+                    max_new_tokens=96,
+                    do_sample=False,
+                    pad_token_id=self._tokenizer.pad_token_id,
+                )
+            start = encoded["input_ids"].shape[1]
+            decoded = self._tokenizer.batch_decode(output[:, start:], skip_special_tokens=True)
+        except Exception:
+            self.errors += len(prompts)
+            return [([], "") for _ in prompts]
+        self.calls += len(prompts)
+        return [_parse_model_output(text) for text in decoded]
+
+    def prewarm(self, prompts: list[str]) -> None:
+        unique = list(dict.fromkeys(prompts))
+        for i in range(0, len(unique), self.batch_size):
+            batch = unique[i : i + self.batch_size]
+            for prompt, result in zip(batch, self._generate(batch)):
+                self._cache[hashlib.sha256(prompt.encode("utf-8")).hexdigest()] = result
+
+    def decide(self, prompt: str, tenant_id: int, db: Database) -> tuple[list[dict[str, Any]], str]:
+        key = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+        if key in self._cache:
+            self.hits += 1
+            result = self._cache[key]
+        else:
+            result = self._generate([prompt])[0]
+            self._cache[key] = result
+        return [dict(c) for c in result[0]], result[1]
+
+
+_OPENCODE_INSTRUCTION = (
+    "\nReturn ONLY compact JSON: "
+    '{"text":"...","tool_calls":[{"tool":"...","params":{...}}]}. '
+    "Allowed tools: query_db, search_docs, generate_report, send_email, "
+    "dispatch_vehicle. Use [] when no tool is needed. Do not mention this instruction."
+)
+
+
+class OpenCodeLLM:
+    """Local adapter that uses the OpenCode CLI model instead of the mock.
+
+    Optimised for the offline check: identical prompts are cached, calls can be
+    prewarmed concurrently, and a shared ``opencode serve`` URL avoids starting
+    a private server for every request. Any CLI error or timeout degrades to an
+    empty proposal so the guardrails still make the decision.
+    """
+
+    def __init__(
+        self,
+        model: str | None = None,
+        server: str | None = None,
+        timeout_s: int = 45,
+        workers: int = 6,
+    ) -> None:
+        self.model = model or os.environ.get("SENTINEL_OPENCODE_MODEL", "opencode/hy4-flash-free")
+        self.server = server or os.environ.get("SENTINEL_OPENCODE_SERVER", "")
+        self.timeout_s = int(timeout_s)
+        self.workers = int(workers)
+        self._cache: dict[str, tuple[list[dict[str, Any]], str]] = {}
+        self._lock = Lock()
+        self.calls = 0
+        self.hits = 0
+        self.errors = 0
+
+    def _command(self, prompt: str) -> list[str]:
+        cmd = ["opencode", "run", "--format", "json"]
+        cmd.extend(["--server", self.server] if self.server else ["--standalone"])
+        cmd.extend(["--model", self.model, prompt + _OPENCODE_INSTRUCTION])
+        return cmd
+
+    def _call_model(self, prompt: str) -> tuple[list[dict[str, Any]], str]:
+        self.calls += 1
+        try:
+            proc = subprocess.run(
+                self._command(prompt),
+                capture_output=True,
+                text=True,
+                timeout=self.timeout_s,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            self.errors += 1
+            return [], ""
+        if proc.returncode != 0:
+            self.errors += 1
+            return [], ""
+        parts: list[str] = []
+        for line in proc.stdout.splitlines():
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if item.get("type") == "text":
+                part = item.get("part") or {}
+                if isinstance(part.get("text"), str):
+                    parts.append(part["text"])
+        return _parse_model_output("".join(parts))
+
+    def prewarm(self, prompts: list[str]) -> None:
+        """Resolve unique prompts concurrently before the timed evaluation."""
+        unique = list(dict.fromkeys(prompts))
+        with ThreadPoolExecutor(max_workers=self.workers) as pool:
+            futures = {pool.submit(self._call_model, p): p for p in unique if p not in self._cache}
+            for future in as_completed(futures):
+                prompt = futures[future]
+                with self._lock:
+                    self._cache[hashlib.sha256(prompt.encode("utf-8")).hexdigest()] = future.result()
+
+    def decide(self, prompt: str, tenant_id: int, db: Database) -> tuple[list[dict[str, Any]], str]:
+        key = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+        with self._lock:
+            cached = self._cache.get(key)
+        if cached is not None:
+            self.hits += 1
+            return [dict(c) for c in cached[0]], cached[1]
+        result = self._call_model(prompt)
+        with self._lock:
+            self._cache[key] = result
+        return [dict(c) for c in result[0]], result[1]
+
+
+def _parse_model_output(raw: str) -> tuple[list[dict[str, Any]], str]:
+    """Parse the requested JSON envelope; fall back to plain text."""
+    text = raw.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text)
+    data: Any = None
+    try:
+        data = json.loads(text)
+    except (json.JSONDecodeError, TypeError):
+        decoder = json.JSONDecoder()
+        for match in re.finditer(r"\{", text):
+            try:
+                candidate, _ = decoder.raw_decode(text[match.start() :])
+            except json.JSONDecodeError:
+                continue
+            if isinstance(candidate, dict):
+                data = candidate
+                break
+    if not isinstance(data, dict):
+        return [], text
+    reply = str(data.get("text", ""))
+    calls: list[dict[str, Any]] = []
+    raw_calls = data.get("tool_calls")
+    if isinstance(raw_calls, list):
+        for item in raw_calls:
+            if isinstance(item, dict) and item.get("tool") in TOOL_RISK_TIERS:
+                params = item.get("params")
+                calls.append({"tool": item["tool"], "params": params if isinstance(params, dict) else {}})
+    return calls, reply
+
+
 def build_llm(backend: str = "mock", temperature: float = 0.0) -> Any:
     if backend == "langchain":
         return LangChainLLM(temperature=temperature)
+    if backend == "opencode":
+        return OpenCodeLLM()
+    if backend == "local":
+        return LocalHFLLM()
     return MockLLM()
 
 

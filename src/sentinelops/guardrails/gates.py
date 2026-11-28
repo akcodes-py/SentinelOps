@@ -23,6 +23,11 @@ _INSTRUCTION_IN_DOC = re.compile(
     r"send .* to @|render this image|bypass the guardrail|pretend you are)"
 )
 _SQL_COMMENT = re.compile(r"--[^\n]*|/\*.*?\*/", re.S)
+# LLM08:2026 — hidden context (system prompt, policy.yaml, internal config).
+_HIDDEN_CONTEXT = re.compile(
+    r"(?i)(policy\.yaml|policy\.schema\.json|injection_low\s*[:=]|injection_high\s*[:=]|"
+    r"allowed_tables\s*[:=]|reason_codes\s*[:=]|session_lock\s*[:=]|version\s*['\"]?\s*:\s*['\"]?2\.2)"
+)
 
 
 @dataclass
@@ -303,6 +308,9 @@ class OutputGate:
         if similarity >= 0.62:
             decision("output_gate", "block", "SYSPROMPT_LEAK", f"similarity {similarity:.2f}")
             return "[blocked]", [Decision("block", "SYSPROMPT_LEAK", "output too similar to system prompt", {"text": "[blocked]"})]
+        if _HIDDEN_CONTEXT.search(text):
+            decision("output_gate", "block", "SYSPROMPT_LEAK", "hidden context or policy file content in output")
+            return "[blocked]", [Decision("block", "SYSPROMPT_LEAK", "hidden context exposure blocked", {"text": "[blocked]"})]
         masked, found = mask_pii(
             text,
             backend=self.pii_backend,

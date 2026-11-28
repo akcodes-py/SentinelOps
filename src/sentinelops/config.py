@@ -32,6 +32,9 @@ class Settings(BaseSettings):
     vector_backend: str = "memory"  # memory | chroma
     pii_backend: str = "regex"      # regex | presidio
     llm_backend: str = "mock"       # mock | langchain | openai | hf
+    # Immutable Hugging Face commit SHA. Required when llm_backend=hf;
+    # branches/tags (e.g. "main") are rejected to prevent supply-chain swaps.
+    hf_revision: str = ""
     temperature: float = 0.0
     corpus_path: str = str(ROOT / "data" / "corpus.json")
     results_dir: str = str(ROOT / "results")

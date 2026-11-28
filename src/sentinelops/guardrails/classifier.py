@@ -128,8 +128,11 @@ def get_model() -> CalibratedClassifierCV:
             if _MODEL is None:
                 if _ARTIFACT.exists():
                     try:
+                        # Justification: artifact is generated locally by
+                        # scripts/train_classifier.py and any load failure
+                        # falls back to rebuilding the model in-process.
                         with _ARTIFACT.open("rb") as fh:
-                            _MODEL = pickle.load(fh)
+                            _MODEL = pickle.load(fh)  # nosec B301
                     except (OSError, pickle.UnpicklingError):
                         _MODEL = _build()
                 else:
