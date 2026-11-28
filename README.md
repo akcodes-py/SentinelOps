@@ -99,3 +99,326 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 pip install -e . --no-deps --no-build-isolation
+```
+
+**macOS / Linux (Bash)**
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+pip install -e . --no-deps --no-build-isolation
+```
+
+### 2. Verify & Evaluate
+
+```bash
+# Run automated tests
+python -m pytest -v                       # Full suite (43 tests, incl. ASR comparison)
+python -m pytest -q -m "not slow"         # Fast CI subset
+
+# Run demo, classifier calibration, and red-team evaluation
+python scripts/demo.py                    # Baseline leaks vs. Defended blocks
+python scripts/train_classifier.py        # Trains & calibrates classifier (ECE < 0.05)
+python scripts/run_evaluation.py --repeats 1
+```
+
+### 3. Launch the Gateway & Web UI
+
+```bash
+python -m uvicorn sentinelops.app.main:app --reload --port 8010
+```
+
+- **Interactive Web UI:** `http://127.0.0.1:8010/ui`
+- **OpenAPI Explorer:** `http://127.0.0.1:8010/docs`
+
+> [!TIP]
+> Port `8010` is used by default because Docker Desktop/WSL often reserves port `8000` on Windows. Switch modes anytime using `SENTINEL_MODE=baseline` or `SENTINEL_MODE=defended`.
+
+---
+
+## 🏗️ Architecture
+
+### 1. System Architecture (Control Plane Overview)
+
+```mermaid
+flowchart TB
+    %% Styling
+    classDef client fill:#1e293b,stroke:#64748b,color:#f8fafc,stroke-width:2px
+    classDef gate fill:#1e1b4b,stroke:#6366f1,color:#e0e7ff,stroke-width:1.5px
+    classDef app fill:#0f172a,stroke:#0ea5e9,color:#e0f2fe,stroke-width:1.5px
+    classDef data fill:#14532d,stroke:#22c55e,color:#dcfce7,stroke-width:1.5px
+    classDef audit fill:#451a03,stroke:#f59e0b,color:#fef3c7,stroke-width:1.5px
+
+    Client([👤 API Client / Web UI]):::client
+
+    subgraph Gateway["🛡️ SentinelOps Security Gateway (FastAPI Control Plane)"]
+        direction LR
+        Auth[🔐 Auth & RBAC\nJWT · Tenant Scope]:::gate
+        Rate[⏱️ Rate Limiter\nToken Bucket]:::gate
+        G1[1️⃣ Input Gate\nRules · Classifier · Session]:::gate
+        G2[2️⃣ Context Gate\nRAG Chunk Scanner]:::gate
+        G3[3️⃣ Prompt Hardening\nHierarchy · Canary]:::gate
+        G4[4️⃣ Tool Gate\nSQL · Params · HITL]:::gate
+        G5[5️⃣ Output Gate\nPII · Egress · Canary]:::gate
+
+        Auth --> Rate --> G1 --> G2 --> G3
+    end
+
+    subgraph App["⚙️ Application Layer"]
+        direction LR
+        Agent[🤖 AI Ops Copilot\nAgent & Tool Router]:::app
+        BizAPI[📦 Business APIs\nCustomers · Invoices · Pickups]:::app
+    end
+
+    subgraph Data["🗄️ Data Layer"]
+        direction LR
+        DB[(SQLite / PostgreSQL)]:::data
+        Vec[(TF-IDF / ChromaDB\nVector Store)]:::data
+    end
+
+    subgraph Obs["📊 Observability & Verification"]
+        direction LR
+        Logs[(Structured JSONL Logs\nrequest_id · reason_code)]:::audit
+        RT[🎯 Red-Team Suite\nReports · CI Policy Gate]:::audit
+        Logs --> RT
+    end
+
+    %% Main Request Path
+    Client ==> Auth
+    G3 ==> Agent
+    Agent <--> Vec
+    Agent ==> G4
+    G4 ==> BizAPI ==> DB
+    G4 ==> G5 ==> Client
+
+    %% Audit Telemetry
+    G1 -.-> Logs
+    G2 -.-> Logs
+    G4 -.-> Logs
+    G5 -.-> Logs
+```
+
+---
+
+### 2. Per-Request Security Decision Flow
+
+Every request to `/copilot` passes through 5 sequential checkpoints. Any unhandled error or timeout at any stage immediately triggers **Fail-Closed (`GUARD_TIMEOUT`)**.
+
+```mermaid
+flowchart TD
+    %% Styling
+    classDef start fill:#0f172a,stroke:#38bdf8,color:#f8fafc,stroke-width:2px
+    classDef check fill:#1e293b,stroke:#94a3b8,color:#f8fafc,stroke-width:1.5px
+    classDef allow fill:#15803d,stroke:#22c55e,color:#ffffff,stroke-width:2px
+    classDef block fill:#b91c1c,stroke:#ef4444,color:#ffffff,stroke-width:2px
+    classDef warn fill:#b45309,stroke:#f59e0b,color:#ffffff,stroke-width:2px
+    classDef fail fill:#4c0519,stroke:#f43f5e,color:#ffffff,stroke-width:2px,stroke-dasharray: 4 4
+
+    Start([📥 Incoming Request]):::start --> AuthCheck
+
+    %% Stage 0: Edge Protection
+    subgraph Edge["Stage 0 · Edge Protection"]
+        AuthCheck{Authenticated?\nJWT + Tenant}:::check
+        RateCheck{Rate Limit OK?\nToken Bucket}:::check
+        AuthCheck -- "No (defended)" --> E401[🚫 401 Unauthorized\nNo reason leaked]:::block
+        AuthCheck -- "Yes / baseline" --> RateCheck
+        RateCheck -- "Exceeded" --> E429[🚫 429 Too Many Requests]:::block
+    end
+
+    RateCheck -- "OK" --> Norm
+
+    %% Checkpoint 1: Input Gate
+    subgraph CP1["Checkpoint 1 · Input Gate"]
+        Norm[Bounded Normalisation\nLength · Encodings · Split Words]:::check
+        RuleHit{Rule Pattern Hit?}:::check
+        ClsScore{Calibrated Classifier\nRisk Score}:::check
+        SessRisk{Session Risk\nElevated?}:::check
+
+        Norm --> RuleHit
+        RuleHit -- "Yes" --> B_Rule[🚫 BLOCK\nINJ_RULE_01..14]:::block
+        RuleHit -- "No" --> ClsScore
+        ClsScore -- "High" --> B_Cls[🚫 BLOCK\nINJ_CLS_HIGH]:::block
+        ClsScore -- "Mid" --> W_Cls[⚠️ SAFE MODE + REVIEW\nINJ_CLS_MID]:::warn
+        ClsScore -- "Low" --> SessRisk
+        SessRisk -- "Locked / Safe" --> B_Sess[🚫 BLOCK\nSESSION_RISK]:::block
+    end
+
+    SessRisk -- "Normal (INJ_ALLOW)" --> CtxCheck
+    W_Cls --> CtxCheck
+
+    %% Checkpoint 2 & 3: Context & Prompt
+    subgraph CP23["Checkpoints 2 & 3 · Context Gate & Prompt Hardening"]
+        CtxCheck{RAG Chunks\nTrusted & Clean?}:::check
+        CtxQuar[⚠️ QUARANTINE CHUNK\nCTX_POISON]:::warn
+        Harden[🔒 Prompt Hardening\nInstruction Hierarchy + Canary Token]:::check
+
+        CtxCheck -- "Poisoned" --> CtxQuar --> Harden
+        CtxCheck -- "Clean (CTX_ALLOW)" --> Harden
+    end
+
+    Harden --> ToolNeeded
+
+    %% Checkpoint 4: Tool Gate
+    subgraph CP4["Checkpoint 4 · Tool Gate"]
+        ToolNeeded{Agent Proposes\nTool Call?}:::check
+        ToolValid{Allowlist · Schema\nSingle-SELECT · Tenant · Caps}:::check
+        HighRisk{High-Risk Tool?\nemail / dispatch}:::check
+        HITL[⏸️ QUEUE FOR HITL\nAPPROVAL_PENDING]:::warn
+        Exec[⚙️ Execute Tool\nTOOL_ALLOW]:::check
+
+        ToolNeeded -- "Yes" --> ToolValid
+        ToolValid -- "Violation" --> B_Tool[🚫 BLOCK\nTOOL_ / SQL_ / TENANT_ / CAP_]:::block
+        ToolValid -- "Valid" --> HighRisk
+        HighRisk -- "Yes" --> HITL
+        HighRisk -- "No" --> Exec
+    end
+
+    ToolNeeded -- "No" --> LeakCheck
+    HITL --> LeakCheck
+    Exec --> LeakCheck
+
+    %% Checkpoint 5: Output Gate
+    subgraph CP5["Checkpoint 5 · Output Gate"]
+        LeakCheck{Canary or System\nPrompt Leak?}:::check
+        PIICheck{PII Detected?}:::check
+        PIIMask[🎭 MASK PII\nPII_MASKED]:::warn
+        EgressCheck{URL / Image\nAllowlisted?}:::check
+        EgressMask[🎭 STRIP EGRESS\nEGRESS_BLOCKED]:::warn
+
+        LeakCheck -- "Yes" --> B_Leak[🚫 BLOCK\nCANARY_LEAK / SYSPROMPT_LEAK]:::block
+        LeakCheck -- "No" --> PIICheck
+        PIICheck -- "Yes" --> PIIMask --> EgressCheck
+        PIICheck -- "No" --> EgressCheck
+        EgressCheck -- "No" --> EgressMask
+    end
+
+    EgressCheck -- "Yes (OUT_ALLOW)" --> SafeOut([✅ Safe Response Returned]):::allow
+    EgressMask --> SafeOut
+
+    %% Global Fail-Closed Handler
+    CP1 -. "Error / Timeout" .-> FailClosed[🛑 FAIL CLOSED\nGUARD_TIMEOUT]:::fail
+    CP4 -. "Error / Timeout" .-> FailClosed
+    CP5 -. "Error / Timeout" .-> FailClosed
+```
+
+---
+
+## 🛡️ Guardrail Policy & Checkpoints
+
+[`policy.yaml`](policy.yaml) is the single versioned source of truth. It is validated against [`policy.schema.json`](policy.schema.json) at startup (refusing to boot on invalid config) and gated in CI by [`scripts/check_policy_diff.py`](scripts/check_policy_diff.py), which fails any PR that loosens thresholds, adds tools, or widens allowlists.
+
+| # | Checkpoint | Actions | Reason Codes |
+|---|---|---|---|
+| **1** | **Input Gate** | `allow` `block` `review` | `INJ_RULE_01`–`14`, `INJ_CLS_HIGH`, `INJ_CLS_MID`, `INPUT_TRUNCATED`, `SESSION_RISK`, `INJ_ALLOW` |
+| **2** | **Context Gate** | `allow` `quarantine` | `CTX_POISON`, `CTX_ALLOW` |
+| **3** | **Prompt Hardening** | *preventive* | Instruction hierarchy, untrusted data delimiters, canary token |
+| **4** | **Tool Gate** | `allow` `block` `review` | `TOOL_NOT_ALLOWED`, `TOOL_PARAM_INVALID`, `SQL_NOT_SELECT`, `TABLE_NOT_ALLOWED`, `TENANT_MISMATCH`, `RECIPIENT_DOMAIN`, `DISPATCH_CAP`, `APPROVAL_PENDING`, `TOOL_ALLOW` |
+| **5** | **Output Gate** | `allow` `mask` `block` | `PII_MASKED`, `CANARY_LEAK`, `SYSPROMPT_LEAK`, `EGRESS_BLOCKED`, `OUT_ALLOW` |
+| **\*** | **Any Checkpoint** | *fail closed* | `GUARD_TIMEOUT` |
+
+> [!IMPORTANT]
+> End users only ever receive a generic safe refusal (`"I can't help with that request."`). Reason codes remain strictly inside structured audit logs, the incident timeline, and reviewer views.
+
+---
+
+## 📊 Verified Evaluation Results
+
+All figures below are **measured** from `run_evaluation.py --repeats 1`, `train_classifier.py`, and `pytest -v` (raw artifacts saved in `results/`).
+
+### PDR §3.1 Target Scorecard
+
+| Metric | Target | Measured Result | Status |
+|---|---|---|---|
+| **Defended ASR (`dev`)** | `< 10%` | **0.0%** *(baseline: 70.8%)* | ✅ Pass |
+| **Defended ASR (`held-out`)** | `< 20%` | **0.0%** *(baseline: 41.7%)* | ✅ Pass |
+| **Defended ASR (`adaptive`)** | `< 20%` | **0.0%** *(baseline: 61.5%)* | ✅ Pass |
+| **False Positive Rate (76 benign queries)** | `< 5%` | **0.0%** across all splits | ✅ Pass |
+| **Mean Gateway Latency** | `< 300 ms` | **23.8 ms** (`dev`) · **53.1 ms** (`held-out`) · **32.2 ms** (`adaptive`) | ✅ Pass |
+| **Classifier Calibration (ECE)** | `< 0.05` | **0.0158** *(isotonic 5-fold CV)* | ✅ Pass |
+| **Reason-Code Test Coverage** | `100%` | **100%** of registry codes covered | ✅ Pass |
+| **High-Risk Tool Approval** | `100%` | **100%** queued in `/approvals` | ✅ Pass |
+| **Residual Risk Completeness** | All surviving listed | **0** surviving cases ([`residual_risk.json`](results/residual_risk.json)) | ✅ Pass |
+
+### Split-by-Split Breakdown
+
+| Split | Cases | Baseline ASR | Defended ASR | Defended FPR | Mean Latency | P95 Latency |
+|---|---:|---:|---:|---:|---:|---:|
+| `dev` | 24 | 0.708 | **0.000** | **0.000** | 23.82 ms | 34.55 ms |
+| `held-out` | 12 | 0.417 | **0.000** | **0.000** | 53.09 ms | 138.92 ms |
+| `adaptive` | 13 | 0.615 | **0.000** | **0.000** | 32.21 ms | 68.90 ms |
+
+```mermaid
+xychart-beta
+    title "ASR by Attack Family — Adaptive Split (Baseline Bars vs. Defended Line)"
+    x-axis ["direct", "indirect", "exfiltration", "agency", "api", "abuse"]
+    y-axis "ASR" 0 --> 1
+    bar [0.00, 0.00, 0.50, 1.00, 1.00, 0.667]
+    line [0.00, 0.00, 0.00, 0.00, 0.00, 0.00]
+```
+
+<details>
+<summary><b>🧪 Automated Test Coverage — 43/43 Passed (Click to expand)</b></summary>
+<br/>
+
+| # | Test Area | File | Cases | What It Proves |
+|---|---|---|---:|---|
+| 1 | Policy loading & validation | [`test_policy.py`](tests/test_policy.py) | 4 | Schema validation, threshold consistency, unknown reason codes rejected |
+| 2 | Reason-code registry | [`test_reason_codes.py`](tests/test_reason_codes.py) | 3 | Every emitted code registered; block + allow tests per code; family codes |
+| 3 | Input / Context / Output gates | [`test_guardrails.py`](tests/test_guardrails.py) | 8 | Injection blocked, benign allowed, poisoned chunks quarantined, PII masked, canary/egress blocked |
+| 4 | Tool gate parameter rules | [`test_tool_gate.py`](tests/test_tool_gate.py) | 10 | Single `SELECT`, table allowlist, tenant scope, report type, recipient domain, HITL approval, dispatch caps, safe mode |
+| 5 | Self-protection & fail-closed | [`test_self_protection.py`](tests/test_self_protection.py) | 6 | Bounded normalisation, split words, base64 decoding, oversized input, timeout fail-closed |
+| 6 | Gateway, Auth & APIs | [`test_api.py`](tests/test_api.py) | 8 | Health, 401 without JWT, tenant scoping, BOLA + SQLi on baseline, injection blocked on defended, approval queue |
+| 7 | Red-team engine & ASR gates | [`test_redteam.py`](tests/test_redteam.py) | 4 | 49 cases across 6 families, ≥76 benign queries, judge rules, defended ASR < 10%, FPR < 5%, latency < 300 ms |
+
+</details>
+
+---
+
+## 🌐 API & Web UI
+
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/ui` | `GET` | Interactive dark-mode Copilot Web UI with attack & benign presets |
+| `/docs` | `GET` | Interactive OpenAPI (Swagger) documentation |
+| `/health` | `GET` | Gateway health, active mode, and policy version |
+| `/auth/token` | `POST` | Issue tenant- and role-scoped JWT (`admin`, `analyst`, `viewer`) |
+| `/copilot` | `POST` | Execute prompt through all 5 security checkpoints |
+| `/customers/{id}`, `/invoices/{id}`, `/pickups/{id}` | `GET` | Tenant-scoped business APIs *(BOLA/SQLi vulnerable in `baseline` mode)* |
+| `/approvals`, `/approvals/{id}/approve`, `/approvals/{id}/reject` | `GET` `POST` | Analyst/admin HITL approval queue for high-risk tool calls |
+| `/reports/timeline`, `/reports/vulnerability`, `/reports/residual` | `GET` | Incident investigation timeline, vulnerability report, and residual risk table |
+
+---
+
+## 🐳 Docker, CI/CD & Production Backends
+
+The core slice runs completely offline using **SQLite**, an in-process **TF-IDF** vector store, and a **regex PII detector**. Optional production adapters (**PostgreSQL**, **ChromaDB**, **Presidio**, **OpenAI / HuggingFace LLMs**) can be enabled via [`.env.example`](.env.example) and [`docker-compose.yml`](docker-compose.yml).
+
+CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) automatically enforces:
+1. Policy schema validation + [`check_policy_diff.py`](scripts/check_policy_diff.py)
+2. Fast unit & guardrail tests (`pytest -m "not slow"`)
+3. Defended red-team ASR & FPR gate
+4. Secret scanning via `gitleaks`
+
+---
+
+## 📁 Repository Layout
+
+| Path | Description |
+|---|---|
+| [`src/sentinelops/app/`](src/sentinelops/app/) | FastAPI gateway, JWT/RBAC auth, rate limiting, business APIs, HITL approvals, Web UI |
+| [`src/sentinelops/guardrails/`](src/sentinelops/guardrails/) | Policy loader, reason-code registry, calibrated classifier, bounded normalisation, session risk, 5 gates |
+| [`src/sentinelops/agent/`](src/sentinelops/agent/) | Copilot tools, prompt hardening, deterministic offline model adapter |
+| [`src/sentinelops/redteam/`](src/sentinelops/redteam/) | 49 attack cases, 76 benign queries (EN/Hinglish/Hindi), rule judge, HTTP runner |
+| [`src/sentinelops/reports.py`](src/sentinelops/reports.py) | Incident timeline, vulnerability report, residual risk table builder |
+| [`docs/`](docs/) | [Architecture](docs/architecture.md) · [Threat Model](docs/threat_model.md) · [Classifier Model Card](docs/model_card_classifier.md) · [System Card](docs/system_card.md) · [Residual Risk](docs/residual_risk.md) |
+| [`scripts/`](scripts/) | Classifier training, full evaluation runner, baseline-vs-defended demo, CI policy diff |
+| [`tests/`](tests/) | 43 automated tests across 7 security & functional areas |
+
+---
+
+<div align="center">
+
+Built by **[Atul Kumar](https://github.com/akcodes-py)**  
+[GitHub](https://github.com/akcodes-py/SentinelOps) • [LinkedIn](https://linkedin.com/in/atul-kumar-07x)
+
+</div>
