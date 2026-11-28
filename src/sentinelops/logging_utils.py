@@ -37,7 +37,6 @@ def emit(event: str, **fields: Any) -> dict[str, Any]:
     record.update(fields)
     line = json.dumps(record, default=str, sort_keys=True)
     print(line, flush=True)
-    token = request_id_var.get()
     path = Path(_log_path())
     if path.parent.exists():
         try:

@@ -30,7 +30,7 @@ TOOL_RISK_TIERS = {
     "dispatch_vehicle": "high",
 }
 
-SECRET_VALUE = "local-dev-secret-change-me"
+SECRET_VALUE = "local-dev-secret-change-me-32bytes!"
 SAFE_REFUSAL = "I can't help with that request."
 
 

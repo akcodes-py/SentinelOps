@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     db_url: str = f"sqlite:///{(ROOT / 'data' / 'sentinel.db').as_posix()}"
     policy_path: str = str(ROOT / "policy.yaml")
     policy_schema_path: str = str(ROOT / "policy.schema.json")
-    jwt_secret: str = "local-dev-secret-change-me"
+    jwt_secret: str = "local-dev-secret-change-me-32bytes!"
     jwt_expiry_minutes: int = 15
     trusted_proxies: str = "127.0.0.1,::1"
     log_path: str = str(ROOT / "logs" / "sentinel.jsonl")

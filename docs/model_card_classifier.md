@@ -7,7 +7,7 @@ SentinelOps. Two thresholds from the calibrated score drive block / safe-mode de
 operational strings (`src/sentinelops/guardrails/classifier.py`). The held-out and
 adaptive red-team splits are never used for training or tuning.
 
-**Model.** TF-IDF (1–2 grams) + logistic regression with sigmoid (Platt) calibration.
+**Model.** TF-IDF (1–2 grams) + logistic regression with isotonic calibration.
 
 **Metrics.** Precision, recall, false positives and expected calibration error (ECE)
 are produced by `python scripts/train_classifier.py`, which also writes a reliability

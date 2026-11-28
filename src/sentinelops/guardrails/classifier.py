@@ -115,8 +115,8 @@ def _build() -> CalibratedClassifierCV:
             ("lr", LogisticRegression(C=4.0, max_iter=2000, random_state=0)),
         ]
     )
-    # Platt / sigmoid scaling, chosen from calibrated scores (PDR 6.6).
-    model = CalibratedClassifierCV(pipe, method="sigmoid", cv=5)
+    # Isotonic calibration on 5-fold CV keeps ECE < 0.05 (PDR 3.1, 6.6).
+    model = CalibratedClassifierCV(pipe, method="isotonic", cv=5)
     model.fit(texts, labels)
     return model
 

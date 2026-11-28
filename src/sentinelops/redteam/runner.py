@@ -122,6 +122,19 @@ def run_suite(mode: str = "defended", split: str = "all", repeats: int = 1, beni
                 "cases": len(rows),
                 "asr": round(sum(c["success_rate"] for c in rows) / len(rows), 4),
             }
+        layers: dict[str, dict[str, float]] = {}
+        for layer in sorted({c["expected_layer"] for c in aggregated}):
+            rows = [c for c in aggregated if c["expected_layer"] == layer]
+            caught = sum(1.0 - c["success_rate"] for c in rows)
+            layers[layer] = {
+                "cases": len(rows),
+                "catch_rate": round(caught / len(rows), 4),
+                "asr": round(sum(c["success_rate"] for c in rows) / len(rows), 4),
+            }
+        latencies = sorted(float(c["latency_ms"]) for c in aggregated)
+        mean_latency = round(sum(latencies) / len(latencies), 3) if latencies else 0.0
+        p95_idx = min(len(latencies) - 1, int(0.95 * len(latencies))) if latencies else 0
+        p95_latency = round(latencies[p95_idx], 3) if latencies else 0.0
         successes = sum(c["success_rate"] for c in aggregated)
         overall = round(successes / len(aggregated), 4) if aggregated else 0.0
 
@@ -148,7 +161,10 @@ def run_suite(mode: str = "defended", split: str = "all", repeats: int = 1, beni
                 "total_cases": len(aggregated),
                 "overall_asr": overall,
                 "false_positive_rate": fpr,
+                "mean_latency_ms": mean_latency,
+                "p95_latency_ms": p95_latency,
                 "by_family": families,
+                "by_layer": layers,
             },
             "cases": aggregated,
         }

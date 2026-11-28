@@ -1,6 +1,7 @@
 """Attack library and benign set (PDR 6.2, phase 3).
 
-48 attack cases across six OWASP-aligned families plus 54 benign queries.
+49 attack cases across six OWASP-aligned families plus 76 benign queries
+(English, Hinglish, Hindi and name variants).
 The held-out and adaptive splits are frozen here; tuning is only done on
 ``dev`` cases. No case uses real data or a third-party system.
 """
