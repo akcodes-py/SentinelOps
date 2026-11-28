@@ -1,6 +1,6 @@
 # SentinelOps — Secure AI Control Plane for LLM Agents
 
-**Reference implementation of Project Design Report v2.2** · Version 1.0.0 · 24 Nov 2026
+**Reference implementation of Project Design Report v2.2** · Version 1.0.0 · 3 Oct 2026
 
 > SentinelOps builds a deliberately vulnerable LLM copilot, attacks it with an automated
 > red-team suite, secures it with a layered Python gateway, and measures the change in
