@@ -152,7 +152,7 @@ class LocalHFLLM:
     evaluation replays exactly what the model produced during prewarm.
     """
 
-    def __init__(self, model_name: str = "Qwen/Qwen2.5-0.5B-Instruct", batch_size: int = 8,
+    def __init__(self, model_name: str = "Qwen/Qwen2.5-0.5B-Instruct", batch_size: int = 16,
                  revision: str | None = None) -> None:
         from ..config import get_settings
 
@@ -198,7 +198,7 @@ class LocalHFLLM:
 
     @staticmethod
     def _compact(prompt: str) -> str:
-        return prompt[-1400:] + _LOCAL_INSTRUCTION
+        return prompt[-600:] + _LOCAL_INSTRUCTION
 
     def _generate(self, prompts: list[str]) -> list[tuple[list[dict[str, Any]], str]]:
         self._load()
@@ -207,13 +207,13 @@ class LocalHFLLM:
             return_tensors="pt",
             padding=True,
             truncation=True,
-            max_length=1024,
+            max_length=512,
         )
         try:
             with self._torch.no_grad():
                 output = self._model.generate(
                     **encoded,
-                    max_new_tokens=96,
+                    max_new_tokens=32,
                     do_sample=False,
                     pad_token_id=self._tokenizer.pad_token_id,
                 )
@@ -229,6 +229,89 @@ class LocalHFLLM:
         unique = list(dict.fromkeys(prompts))
         for i in range(0, len(unique), self.batch_size):
             batch = unique[i : i + self.batch_size]
+            print(f"  prewarm batch {i // self.batch_size + 1}: {len(batch)} prompts", flush=True)
+            for prompt, result in zip(batch, self._generate(batch)):
+                self._cache[hashlib.sha256(prompt.encode("utf-8")).hexdigest()] = result
+
+    def decide(self, prompt: str, tenant_id: int, db: Database) -> tuple[list[dict[str, Any]], str]:
+        key = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+        if key in self._cache:
+            self.hits += 1
+            result = self._cache[key]
+        else:
+            result = self._generate([prompt])[0]
+            self._cache[key] = result
+        return [dict(c) for c in result[0]], result[1]
+
+
+class FastLocalLLM:
+    """Fast local seq2seq model (flan-t5-small) for the offline LLM check.
+
+    Chosen because the 0.5B causal model is too slow on this CPU. Immutable HF
+    revision is still pinned; prompts are batched and cached exactly like the
+    other local adapter.
+    """
+
+    def __init__(self, model_name: str = "google/flan-t5-small", batch_size: int = 16,
+                 revision: str | None = None) -> None:
+        from ..config import get_settings
+
+        self.model_name = model_name
+        self.revision = revision or get_settings().hf_revision
+        if self.revision and not (
+            len(self.revision) >= 7
+            and all(c in "0123456789abcdefABCDEF" for c in self.revision)
+        ):
+            raise ValueError("SENTINEL_HF_REVISION must be a commit SHA, not a branch/tag")
+        self.batch_size = int(batch_size)
+        self._tokenizer: Any = None
+        self._model: Any = None
+        self._cache: dict[str, tuple[list[dict[str, Any]], str]] = {}
+        self.calls = 0
+        self.hits = 0
+        self.errors = 0
+
+    def _load(self) -> None:
+        if self._model is not None:
+            return
+        if not self.revision:
+            raise RuntimeError("SENTINEL_HF_REVISION (immutable commit SHA) is required")
+        import torch
+        from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
+
+        self._torch = torch
+        self._tokenizer = AutoTokenizer.from_pretrained(self.model_name, revision=self.revision)
+        self._model = AutoModelForSeq2SeqLM.from_pretrained(self.model_name, revision=self.revision)
+        self._model.eval()
+
+    @staticmethod
+    def _compact(prompt: str) -> str:
+        return "Answer briefly for an operations copilot. " + prompt[-500:] + _LOCAL_INSTRUCTION
+
+    def _generate(self, prompts: list[str]) -> list[tuple[list[dict[str, Any]], str]]:
+        self._load()
+        encoded = self._tokenizer(
+            [self._compact(p) for p in prompts],
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=256,
+        )
+        try:
+            with self._torch.no_grad():
+                output = self._model.generate(**encoded, max_new_tokens=32, do_sample=False)
+            decoded = self._tokenizer.batch_decode(output, skip_special_tokens=True)
+        except Exception:
+            self.errors += len(prompts)
+            return [([], "") for _ in prompts]
+        self.calls += len(prompts)
+        return [_parse_model_output(text) for text in decoded]
+
+    def prewarm(self, prompts: list[str]) -> None:
+        unique = list(dict.fromkeys(prompts))
+        for i in range(0, len(unique), self.batch_size):
+            batch = unique[i : i + self.batch_size]
+            print(f"  prewarm batch {i // self.batch_size + 1}: {len(batch)} prompts", flush=True)
             for prompt, result in zip(batch, self._generate(batch)):
                 self._cache[hashlib.sha256(prompt.encode("utf-8")).hexdigest()] = result
 
@@ -372,6 +455,8 @@ def build_llm(backend: str = "mock", temperature: float = 0.0) -> Any:
         return OpenCodeLLM()
     if backend == "local":
         return LocalHFLLM()
+    if backend == "fast":
+        return FastLocalLLM()
     return MockLLM()
 
 

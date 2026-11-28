@@ -1,4 +1,4 @@
-"""Run the defended red-team check with a real local LLM (Qwen 0.5B Instruct).
+"""Run the defended red-team check with a real local LLM (flan-t5-small).
 
 The hosted OpenCode free quota was exhausted (429), so this uses a locally
 downloaded Hugging Face instruct model instead. Optimisation: a fast recorder
@@ -9,6 +9,7 @@ the owner-verified mock-backend artifacts untouched.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,7 +18,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from sentinelops.agent.agent import LocalHFLLM  # noqa: E402
+from sentinelops.agent.agent import FastLocalLLM  # noqa: E402
 from sentinelops.redteam.runner import run_suite  # noqa: E402
 
 
@@ -39,7 +40,7 @@ def main() -> None:
     unique = list(dict.fromkeys(recorder.prompts))
     print(f"Collected {len(recorder.prompts)} requests / {len(unique)} unique prompts.", flush=True)
 
-    adapter = LocalHFLLM()
+    adapter = FastLocalLLM(batch_size=16, revision=os.environ.get("SENTINEL_HF_REVISION"))
     print(f"Prewarming with model={adapter.model_name} batch={adapter.batch_size}...", flush=True)
     adapter.prewarm(unique)
     print(f"Prewarm complete: calls={adapter.calls} errors={adapter.errors}", flush=True)
@@ -53,7 +54,7 @@ def main() -> None:
         json.dumps(
             {
                 "generated_at": datetime.now(timezone.utc).isoformat(),
-                "backend": "local-hf",
+                "backend": "fast-local-hf",
                 "model": adapter.model_name,
                 "server": "cpu",
                 "mode": "defended",
@@ -80,7 +81,7 @@ def main() -> None:
                 "# Local LLM backend — defended red-team check",
                 "",
                 f"- Generated: `{datetime.now(timezone.utc).isoformat()}`",
-                f"- Backend: `local-hf` · Model: `{adapter.model_name}` · Device: CPU (hosted OpenCode free quota was exhausted)",
+                f"- Backend: `fast-local-hf` · Model: `{adapter.model_name}` · Device: CPU (hosted OpenCode free quota was exhausted)",
                 f"- Case set: 49 attacks (`all`) + 76 benign · repeats: 1 · mode: defended",
                 f"- Model calls (prewarm): {adapter.calls} · evaluation cache hits: {adapter.hits} · errors: {adapter.errors}",
                 "",
@@ -102,7 +103,7 @@ def main() -> None:
     )
 
     print(
-        f"RESULT backend=local-hf model={adapter.model_name} ASR={summary['overall_asr']:.4f} "
+        f"RESULT backend=fast-local-hf model={adapter.model_name} ASR={summary['overall_asr']:.4f} "
         f"FPR={summary['false_positive_rate']:.4f} mean_ms={summary['mean_latency_ms']} "
         f"calls={adapter.calls} errors={adapter.errors}",
         flush=True,

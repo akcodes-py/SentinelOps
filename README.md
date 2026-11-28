@@ -364,6 +364,22 @@ All figures below are **measured** from `run_evaluation.py --repeats 1`, `train_
 | **High-Risk Tool Approval** | `100%` | **100%** queued in `/approvals` | ✅ Pass |
 | **Residual Risk Completeness** | All surviving listed | **0** surviving cases ([`residual_risk.json`](results/residual_risk.json)) | ✅ Pass |
 
+### Local LLM backend check — achieved result
+
+A separate check ran the defended harness with a **real local LLM** instead of the deterministic mock backend. The hosted `opencode/hy4-flash-free` model could not be used (free quota exhausted, HTTP 429, ~12 h retry; other hosted models require paid credits), and `Qwen2.5-0.5B-Instruct` was too slow on CPU, so the check used the pinned local `google/flan-t5-small` model (`0fc9ddf78a1e988dac52e2dac162b0ede4fd74ab`). See [`local_llm_check_summary.md`](results/local_llm_check_summary.md) and [`local_llm_check.json`](results/local_llm_check.json).
+
+| Metric | Local LLM result |
+|---|---:|
+| Attack Success Rate (49 attacks, `all`, defended) | **0.0000** |
+| False Positive Rate (76 benign queries) | **0.0000** |
+| Mean latency | **21.745 ms** |
+| P95 latency | **31.872 ms** |
+| Model calls (prewarmed, cached) | 84 · errors 0 |
+
+**Done:** AES-256-GCM encrypted audit payloads, 5 TLS/security headers, OWASP 2026 mappings + 13 new tests, Postman/Burp VAPT artifacts, a local LLM adapter with pinned revision, batched prewarm and cache, and the result files above. `write=False` was used, so the owner-verified mock artifacts were not overwritten.
+
+**Not done / not claimed:** no hosted-provider LLM run (quota/payment blockers), no second `baseline` run with the local LLM, no Burp screenshots (checklist only) and no committed full ZAP HTML report. Tool calls are parsed from the model's JSON envelope and unparseable replies degrade to text only, so tool-gate coverage in this check is limited. This local check is not an independent pentest and does not replace the verified mock-backend scorecard above.
+
 ### Split-by-Split Breakdown
 
 | Split | Cases | Baseline ASR | Defended ASR | Defended FPR | Mean Latency | P95 Latency |
@@ -442,7 +458,8 @@ CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) automatically enforc
 | [`src/middleware/security_headers.py`](src/middleware/security_headers.py) | HSTS, nosniff, X-Frame-Options, strict CSP and referrer headers |
 | [`SECURITY_ASSESSMENT.md`](SECURITY_ASSESSMENT.md) · [`tracker.md`](tracker.md) · [`decision.md`](decision.md) | VAPT report with OWASP 2026 mappings, progress tracker and implementation decisions |
 | [`docs/`](docs/) | [Architecture](docs/architecture.md) · [Threat Model](docs/threat_model.md) · [Classifier Model Card](docs/model_card_classifier.md) · [System Card](docs/system_card.md) · [Residual Risk](docs/residual_risk.md) · [Postman VAPT collection](docs/sentinelops.postman_collection.json) · [Burp checklist](docs/BURP_SUITE_CHECKLIST.md) · [Evidence folder](docs/security_evidence/) |
-| [`scripts/`](scripts/) | Classifier training, full evaluation runner, baseline-vs-defended demo, CI policy diff |
+| [`scripts/`](scripts/) | Classifier training, full evaluation runner, baseline-vs-defended demo, CI policy diff, local LLM backend check ([`run_opencode_llm_check.py`](scripts/run_opencode_llm_check.py)) |
+| [`results/local_llm_check.*`](results/) | Raw + summary output of the pinned local-LLM defended check (ASR/FPR 0.0) |
 | [`tests/`](tests/) | 114 automated tests across 9 security & functional areas (incl. `test_gateway_crypto_and_owasp2026.py`) |
 | [`frontend/`](frontend/) | React + Vite frontend UI |
 | [`postman/`](postman/) | Postman v2.1 API & security test collection |

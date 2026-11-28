@@ -108,6 +108,19 @@ Harness: `python scripts/run_evaluation.py --repeats 1`; 49 adversarial cases + 
 
 Classifier calibration: ECE 0.0158 (isotonic 5-fold CV, `scripts/train_classifier.py`). Reason-code coverage: 100% of the registry. High-risk tool approval: 100% queued. Residual risk rows: 0.
 
+### 6.1 Local LLM backend check (separate from the verified scorecard)
+
+The hosted `opencode/hy4-flash-free` model returned HTTP 429 (free quota exhausted) and other hosted models require paid credits; `Qwen2.5-0.5B-Instruct` was too slow on this CPU. The check therefore used a pinned local `google/flan-t5-small` model (revision `0fc9ddf78a1e988dac52e2dac162b0ede4fd74ab`) with batched prewarm and cache, via `scripts/run_opencode_llm_check.py` with `write=False`.
+
+| Metric | Result |
+|---|---:|
+| ASR (49 attacks, `all`, defended) | **0.0000** |
+| FPR (76 benign queries) | **0.0000** |
+| Mean / P95 latency | 21.745 ms / 31.872 ms |
+| Model calls / errors | 84 / 0 |
+
+Raw artifacts: `results/local_llm_check.json` and `results/local_llm_check_summary.md`. This is a local model check, not an independent pentest; tool calls are parsed from a JSON envelope and unparseable replies degrade to text only, so tool-gate coverage is limited. It does not replace the owner-verified mock-backend results in §6.
+
 ---
 
 ## 7. Tooling evidence and limitations
