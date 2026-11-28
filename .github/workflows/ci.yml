@@ -9,8 +9,8 @@ jobs:
   security-regression:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
           cache: pip
@@ -35,8 +35,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: security-regression
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
           cache: pip
@@ -48,8 +48,10 @@ jobs:
           sleep 3
           curl -f http://127.0.0.1:8010/health
       - name: OWASP ZAP Baseline Scan
-        uses: zaproxy/action-baseline@v0.12.0
+        uses: zaproxy/action-baseline@v0.15.0
         with:
           target: "http://127.0.0.1:8010/openapi.json"
+          rules_file_name: ".zap/rules.tsv"
+          artifact_name: "zap-baseline-report"
           fail_action: true
           allow_issue_writing: false

@@ -15,6 +15,10 @@ SECURITY_HEADERS: dict[str, str] = {
     "X-Frame-Options": "DENY",
     "Content-Security-Policy": "default-src 'self'",
     "Referrer-Policy": "no-referrer",
+    "Cross-Origin-Resource-Policy": "same-origin",
+    "Cache-Control": "no-store",
+    "Pragma": "no-cache",
+    "Expires": "0",
 }
 
 Message = dict[str, Any]

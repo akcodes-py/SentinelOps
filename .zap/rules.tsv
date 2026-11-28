@@ -2,4 +2,7 @@
 # Format: <rule_id>\t<IGNORE|INFO|WARN|FAIL>\t<description>
 10021	WARN	X-Content-Type-Options Header Missing
 10038	WARN	Content Security Policy (CSP) Header Not Set
+10024	IGNORE	Sensitive Information in URL - OpenAPI template path/query parameters only, no real session values
+10049	IGNORE	Non-Storable Content - informational alert raised because API responses correctly use no-store; non-storable is the desired security posture
 10096	IGNORE	Timestamp Disclosure - Unix
+10112	IGNORE	Session Management Response Identified - template session_id query parameter in /reports/timeline, no session cookie issued
