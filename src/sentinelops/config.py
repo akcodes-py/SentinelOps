@@ -25,11 +25,13 @@ class Settings(BaseSettings):
     policy_schema_path: str = str(ROOT / "policy.schema.json")
     jwt_secret: str = "local-dev-secret-change-me-32bytes!"
     jwt_expiry_minutes: int = 15
+    require_https: bool = False
     trusted_proxies: str = "127.0.0.1,::1"
     log_path: str = str(ROOT / "logs" / "sentinel.jsonl")
+    alert_webhook: str = ""
     vector_backend: str = "memory"  # memory | chroma
     pii_backend: str = "regex"      # regex | presidio
-    llm_backend: str = "mock"       # mock | openai | hf
+    llm_backend: str = "mock"       # mock | langchain | openai | hf
     temperature: float = 0.0
     corpus_path: str = str(ROOT / "data" / "corpus.json")
     results_dir: str = str(ROOT / "results")

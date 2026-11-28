@@ -7,7 +7,7 @@
 
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115%2B-009688?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
-[![Tests](https://img.shields.io/badge/Pytest-43%20Passed-2ea44f?style=flat-square&logo=pytest&logoColor=white)](tests/)
+[![Tests](https://img.shields.io/badge/Pytest-98%20Passed-2ea44f?style=flat-square&logo=pytest&logoColor=white)](tests/)
 [![Policy](https://img.shields.io/badge/Policy-v2.2%20Validated-6366f1?style=flat-square)](policy.yaml)
 [![OWASP](https://img.shields.io/badge/OWASP-LLM%20%26%20API%20Top%2010-dc2626?style=flat-square)](docs/threat_model.md)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?style=flat-square&logo=docker&logoColor=white)](Dockerfile)
@@ -70,9 +70,9 @@ It pairs a deliberately vulnerable target with a hardened gateway and an automat
 
 ## ✨ Key Capabilities
 
-- **5-Checkpoint Security Gateway**: Driven by a single schema-validated [`policy.yaml`](policy.yaml) ([`policy.schema.json`](policy.schema.json)) enforcing JWT/RBAC, token-bucket rate limiting, input/context/output gates, PII masking (regex + optional Presidio), and egress allowlists.
-- **Hardened Tool Execution**: Enforces single-`SELECT` SQL gates, table allowlists, tenant-scoped DB filtering, dispatch caps, and a **Human-in-the-Loop (HITL) approval queue** (`/approvals`) for high-risk actions (`send_email`, `dispatch_vehicle`).
-- **Audit Logging & Incident Investigation**: Emits structured JSONL logs ([`logging_utils.py`](src/sentinelops/logging_utils.py)) tagged with `request_id`, `policy_version`, and registered reason codes to power `/reports/timeline`, `/reports/vulnerability`, and `/reports/residual`.
+- **5-Checkpoint Security Gateway**: Driven by a single schema-validated [`policy.yaml`](policy.yaml) ([`policy.schema.json`](policy.schema.json)) enforcing JWT/RBAC, optional HTTPS/TLS (`SENTINEL_REQUIRE_HTTPS`) + HSTS headers, token-bucket rate limiting, input/context/output gates, PII masking (regex default + optional Presidio adapter), and egress allowlists.
+- **Hardened Tool Execution**: Enforces single-`SELECT` SQL gates, table allowlists, tenant-scoped DB filtering, read-only DB execution (`PRAGMA query_only = ON` in defended mode), dispatch caps, and a **Human-in-the-Loop (HITL) approval queue** (`/approvals`) for high-risk actions (`send_email`, `dispatch_vehicle`).
+- **Security Event Logging & Alerting**: Emits structured JSONL logs and `security_alert` events ([`logging_utils.py`](src/sentinelops/logging_utils.py)) tagged with `request_id`, `policy_version`, and registered reason codes to power `/reports/alerts`, `/reports/timeline`, `/reports/vulnerability`, and `/reports/residual`.
 - **Fail-Closed Self-Protection**: Bounded input normalisation (encodings, split words, length caps), timeout fail-closed (`GUARD_TIMEOUT`), and a CI policy-diff gate that blocks PRs attempting to loosen controls.
 
 ---
@@ -113,7 +113,7 @@ pip install -e . --no-deps --no-build-isolation
 
 ```bash
 # Run automated tests
-python -m pytest -v                       # Full suite (43 tests, incl. ASR comparison)
+python -m pytest -v                       # Full suite (98 tests, incl. ASR comparison)
 python -m pytest -q -m "not slow"         # Fast CI subset
 
 # Run demo, classifier calibration, and red-team evaluation
@@ -357,7 +357,7 @@ xychart-beta
 ```
 
 <details>
-<summary><b>🧪 Automated Test Coverage — 43/43 Passed (Click to expand)</b></summary>
+<summary><b>🧪 Automated Test Coverage — 98/98 Passed (Click to expand)</b></summary>
 <br/>
 
 | # | Test Area | File | Cases | What It Proves |
@@ -369,6 +369,7 @@ xychart-beta
 | 5 | Self-protection & fail-closed | [`test_self_protection.py`](tests/test_self_protection.py) | 6 | Bounded normalisation, split words, base64 decoding, oversized input, timeout fail-closed |
 | 6 | Gateway, Auth & APIs | [`test_api.py`](tests/test_api.py) | 8 | Health, 401 without JWT, tenant scoping, BOLA + SQLi on baseline, injection blocked on defended, approval queue |
 | 7 | Red-team engine & ASR gates | [`test_redteam.py`](tests/test_redteam.py) | 4 | 49 cases across 6 families, ≥76 benign queries, judge rules, defended ASR < 10%, FPR < 5%, latency < 300 ms |
+| 8 | Extended security controls | [`test_security_controls.py`](tests/test_security_controls.py) | 55 | All 14 `INJ_RULE`s, all 5 PII types, egress variants, HTTPS/HSTS, read-only DB, alerts, RBAC, 429 rate limit, session risk, VectorStore |
 
 </details>
 
@@ -385,19 +386,20 @@ xychart-beta
 | `/copilot` | `POST` | Execute prompt through all 5 security checkpoints |
 | `/customers/{id}`, `/invoices/{id}`, `/pickups/{id}` | `GET` | Tenant-scoped business APIs *(BOLA/SQLi vulnerable in `baseline` mode)* |
 | `/approvals`, `/approvals/{id}/approve`, `/approvals/{id}/reject` | `GET` `POST` | Analyst/admin HITL approval queue for high-risk tool calls |
-| `/reports/timeline`, `/reports/vulnerability`, `/reports/residual` | `GET` | Incident investigation timeline, vulnerability report, and residual risk table |
+| `/reports/alerts`, `/reports/timeline`, `/reports/vulnerability`, `/reports/residual` | `GET` | Security alerts, incident investigation timeline, vulnerability report, and residual risk table |
 
 ---
 
 ## 🐳 Docker, CI/CD & Production Backends
 
-The core slice runs completely offline using **SQLite**, an in-process **TF-IDF** vector store, and a **regex PII detector**. Optional production adapters (**PostgreSQL**, **ChromaDB**, **Presidio**, **OpenAI / HuggingFace LLMs**) can be enabled via [`.env.example`](.env.example) and [`docker-compose.yml`](docker-compose.yml).
+The core slice runs completely offline using **SQLite**, an in-process **TF-IDF** vector store, and a **regex PII detector**. Optional production adapters (**PostgreSQL**, **ChromaDB**, **Presidio**, **OpenAI / HuggingFace LLMs**) can be enabled via [`.env.example`](.env.example) and [`docker-compose.yml`](docker-compose.yml). A **React** UI ([`frontend/`](frontend/)) and **Postman** collection ([`postman/`](postman/SentinelOps.postman_collection.json)) are also included.
 
 CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) automatically enforces:
 1. Policy schema validation + [`check_policy_diff.py`](scripts/check_policy_diff.py)
 2. Fast unit & guardrail tests (`pytest -m "not slow"`)
 3. Defended red-team ASR & FPR gate
 4. Secret scanning via `gitleaks`
+5. OWASP ZAP baseline scan (`zaproxy/action-baseline`) against the running gateway
 
 ---
 
@@ -412,7 +414,9 @@ CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) automatically enforc
 | [`src/sentinelops/reports.py`](src/sentinelops/reports.py) | Incident timeline, vulnerability report, residual risk table builder |
 | [`docs/`](docs/) | [Architecture](docs/architecture.md) · [Threat Model](docs/threat_model.md) · [Classifier Model Card](docs/model_card_classifier.md) · [System Card](docs/system_card.md) · [Residual Risk](docs/residual_risk.md) |
 | [`scripts/`](scripts/) | Classifier training, full evaluation runner, baseline-vs-defended demo, CI policy diff |
-| [`tests/`](tests/) | 43 automated tests across 7 security & functional areas |
+| [`tests/`](tests/) | 98 automated tests across 8 security & functional areas |
+| [`frontend/`](frontend/) | React + Vite frontend UI |
+| [`postman/`](postman/) | Postman v2.1 API & security test collection |
 
 ---
 

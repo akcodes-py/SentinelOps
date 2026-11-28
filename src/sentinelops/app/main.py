@@ -16,6 +16,7 @@ from ..guardrails.policy import Policy, get_policy, set_policy
 from ..guardrails.registry import checkpoint_for
 from ..guardrails.session import SessionStore
 from ..logging_utils import (
+    configure_alerting,
     configure_logging,
     decision,
     elapsed_ms,
@@ -50,6 +51,7 @@ class ApprovalDecision(BaseModel):
 def create_app(settings: Settings | None = None, db: Database | None = None, policy: Policy | None = None) -> FastAPI:
     settings = settings or get_settings()
     configure_logging(settings.log_path)
+    configure_alerting(settings.alert_webhook)
     active_policy = policy or get_policy()
     set_policy(active_policy)
     database = db or Database(settings.db_url)
@@ -101,6 +103,11 @@ def create_app(settings: Settings | None = None, db: Database | None = None, pol
                 return JSONResponse(status_code=413, content={"detail": "request too large"})
 
             if settings.is_defended:
+                if settings.require_https:
+                    proto = request.headers.get("x-forwarded-proto", request.url.scheme).split(",")[0].strip().lower()
+                    if proto != "https":
+                        decision("gateway", "block", "TENANT_MISMATCH", "https required for token and api traffic")
+                        return JSONResponse(status_code=403, content={"detail": "HTTPS required"})
                 client_ip = _client_ip(request, settings.trusted_proxy_set)
                 api_key = request.headers.get("x-api-key", client_ip)
                 if not state["limiter"].allow(f"{api_key}|{client_ip}"):
@@ -111,6 +118,8 @@ def create_app(settings: Settings | None = None, db: Database | None = None, pol
             response = await call_next(request)
             response.headers["X-Request-ID"] = rid
             response.headers["X-Policy-Version"] = active_policy.version
+            if settings.is_defended:
+                response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
             emit("http_request", method=request.method, path=request.url.path, status=response.status_code, latency_ms=elapsed_ms(start))
             return response
         finally:
@@ -247,6 +256,12 @@ def create_app(settings: Settings | None = None, db: Database | None = None, pol
         from ..reports import build_residual_risk
 
         return build_residual_risk(state["settings"].results_dir)
+
+    @app.get("/reports/alerts")
+    def security_alerts(limit: int = 50, p: Principal = Depends(principal)) -> list[dict[str, Any]]:
+        from ..logging_utils import get_alerts
+
+        return get_alerts(limit=limit)
 
     return app
 

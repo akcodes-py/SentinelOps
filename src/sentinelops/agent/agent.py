@@ -113,6 +113,31 @@ class MockLLM:
         return [], "Here is the operational summary for your tenant."
 
 
+class LangChainLLM:
+    """Optional LangChain adapter using the same ``decide`` interface."""
+
+    def __init__(self, model_name: str = "gpt-4o-mini", temperature: float = 0.0) -> None:
+        self.model_name = model_name
+        self.temperature = temperature
+        try:
+            from langchain_core.messages import HumanMessage, SystemMessage  # type: ignore  # noqa: F401
+        except ImportError as exc:
+            raise RuntimeError("langchain-core is required when SENTINEL_LLM_BACKEND=langchain") from exc
+
+    def decide(self, prompt: str, tenant_id: int, db: Database) -> tuple[list[dict[str, Any]], str]:
+        from langchain_openai import ChatOpenAI  # type: ignore
+
+        llm = ChatOpenAI(model=self.model_name, temperature=self.temperature)
+        reply = llm.invoke(prompt)
+        return [], str(getattr(reply, "content", reply))
+
+
+def build_llm(backend: str = "mock", temperature: float = 0.0) -> Any:
+    if backend == "langchain":
+        return LangChainLLM(temperature=temperature)
+    return MockLLM()
+
+
 class Agent:
     def __init__(
         self,

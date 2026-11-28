@@ -184,7 +184,14 @@ class Database:
             statement = f"{statement} {clause} tenant_id = ?"
         if not re.search(r"\bLIMIT\b", statement, re.I):
             statement = f"{statement} LIMIT {int(max_rows)}"
-        return self.rows(statement, (tenant_id,) if "tenant_id = ?" in statement else ())
+        params = (tenant_id,) if "tenant_id = ?" in statement else ()
+        with self._lock:
+            self.conn.execute("PRAGMA query_only = ON")
+            try:
+                cur = self.conn.execute(statement, params)
+                return [dict(r) for r in cur.fetchall()]
+            finally:
+                self.conn.execute("PRAGMA query_only = OFF")
 
 
 def _first_table(sql: str) -> str:

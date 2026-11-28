@@ -9,6 +9,7 @@ import json
 import threading
 import time
 import uuid
+from collections import deque
 from contextvars import ContextVar
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,6 +20,13 @@ policy_version_var: ContextVar[str] = ContextVar("policy_version", default="-")
 tenant_var: ContextVar[str] = ContextVar("tenant", default="-")
 
 _lock = threading.Lock()
+_ALERTS: deque[dict[str, Any]] = deque(maxlen=200)
+_ALERT_WEBHOOK = ""
+
+
+def configure_alerting(webhook_url: str) -> None:
+    global _ALERT_WEBHOOK
+    _ALERT_WEBHOOK = webhook_url.strip()
 
 
 def new_request_id() -> str:
@@ -70,7 +78,7 @@ def decision(
     **extra: Any,
 ) -> dict[str, Any]:
     """Log a guardrail decision. Reason code is only ever internal."""
-    return emit(
+    record = emit(
         "guardrail_decision",
         checkpoint=checkpoint,
         action=action,
@@ -78,6 +86,35 @@ def decision(
         detail=detail,
         **extra,
     )
+    if action in {"block", "review", "quarantine"}:
+        alert("high" if action == "block" else "medium", reason_code, detail, checkpoint=checkpoint, action=action)
+    return record
+
+
+def alert(severity: str, reason_code: str, detail: str = "", **extra: Any) -> dict[str, Any]:
+    """Record a security alert for blocked or flagged requests."""
+    entry = emit(
+        "security_alert",
+        severity=severity,
+        reason_code=reason_code,
+        detail=detail,
+        **extra,
+    )
+    with _lock:
+        _ALERTS.append(entry)
+    if _ALERT_WEBHOOK:
+        try:
+            import httpx
+
+            httpx.post(_ALERT_WEBHOOK, json=entry, timeout=1.0)
+        except Exception:
+            pass
+    return entry
+
+
+def get_alerts(limit: int = 50) -> list[dict[str, Any]]:
+    with _lock:
+        return list(_ALERTS)[-limit:]
 
 
 def log_tool_call(name: str, params: dict[str, Any], outcome: str, reason_code: str = "") -> None:
